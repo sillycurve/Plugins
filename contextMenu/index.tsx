@@ -30,13 +30,65 @@ const settings = definePluginSettings({
     },
 });
 
+// Function to update all commands with current voice channel
+function updateCommandsWithCurrentVC() {
+    const currentChannelId = vc.getVoiceChannelId();
+    if (!currentChannelId) return false; // Not in a voice channel
+    
+    const commands = isValidJson(settings.store.commands) as commands[];
+    if (commands.length === 0) return false;
+    
+    commands.forEach(command => {
+        command.channelID = currentChannelId;
+    });
+    
+    settings.store.commands = JSON.stringify(commands);
+    
+    Toasts.show({
+        message: `Updated all commands to current voice channel`,
+        id: "commands-updated",
+        type: Toasts.Type.SUCCESS,
+        options: {
+            position: Toasts.Position.BOTTOM,
+        }
+    });
+    
+    return true;
+}
 
 function Kbind(e: KeyboardEvent) {
     if (e.altKey && e.key.toLowerCase() === 'c') {
+        // Check if user is in a voice channel
+        const currentChannelId = vc.getVoiceChannelId();
+        if (currentChannelId) {
+            // Automatically update commands and enable automatic mode
+            if (!Vencord.Plugins.plugins.contextMenu.settings.store.isautomatic) {
+                Vencord.Plugins.plugins.contextMenu.settings.store.isautomatic = true;
+            }
+            updateCommandsWithCurrentVC();
+        }
+        
+        // Always open the modal
         openModal(modalProps => <EncModals modalProps={modalProps} />)
     }
 }
 
+// Voice channel change listener
+let previousChannelId: string | null = null;
+
+function handleVoiceChannelChange() {
+    const currentChannelId = vc.getVoiceChannelId();
+    
+    // If we just joined a voice channel (and we have automatic mode enabled)
+    if (currentChannelId && currentChannelId !== previousChannelId && settings.store.isautomatic) {
+        updateCommandsWithCurrentVC();
+    }
+    
+    previousChannelId = currentChannelId;
+}
+
+// Set up voice state monitoring
+let voiceStateInterval: NodeJS.Timeout | null = null;
 
 export default definePlugin({
     name: "contextMenu",
@@ -47,9 +99,21 @@ export default definePlugin({
     contextMenus: { "rtc-channel": ChannelMakeContextMenuPatch("rtc-channel"), "user-context": makeContextMenuPatch(), "channel-context": ChannelMakeContextMenuPatch("channel-context") },
     start() {
         document.addEventListener('keydown', Kbind);
+        
+        // Initialize previous channel state
+        previousChannelId = vc.getVoiceChannelId();
+        
+        // Set up voice state monitoring (check every 1 second)
+        voiceStateInterval = setInterval(handleVoiceChannelChange, 1000);
     },
     stop() {
         document.removeEventListener('keydown', Kbind);
+        
+        // Clean up interval
+        if (voiceStateInterval) {
+            clearInterval(voiceStateInterval);
+            voiceStateInterval = null;
+        }
     }
 });
 
@@ -77,6 +141,12 @@ function EncModals({ modalProps }: { modalProps: ModalProps }) {
     // Load available servers on mount
     React.useEffect(() => {
         loadAvailableServers();
+        
+        // Auto-fill current voice channel if in one
+        const currentChannelId = vc.getVoiceChannelId();
+        if (currentChannelId) {
+            setchannelID(currentChannelId);
+        }
     }, []);
 
     const loadAvailableServers = () => {
@@ -217,11 +287,13 @@ function EncModals({ modalProps }: { modalProps: ModalProps }) {
                                 Vencord.Plugins.plugins.contextMenu.settings.store.isautomatic = false;
                             }
                             const currentChannelId = vc.getVoiceChannelId();
-                            Commands.forEach(command => {
-                                command.channelID = currentChannelId
-                            });
-                            settings.store.commands = JSON.stringify(Commands);
-                            setCommands(JSON.parse(settings.store.commands));
+                            if (currentChannelId) {
+                                Commands.forEach(command => {
+                                    command.channelID = currentChannelId
+                                });
+                                settings.store.commands = JSON.stringify(Commands);
+                                setCommands(JSON.parse(settings.store.commands));
+                            }
                         }}
 
                     />
