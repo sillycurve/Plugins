@@ -1,17 +1,15 @@
 import definePlugin, { OptionType } from "@utils/types";
 import { Toasts, FluxDispatcher, UserStore, GuildStore, GuildMemberStore } from "@webpack/common";
 import { definePluginSettings } from "@api/Settings";
-import { findStoreLazy, findByPropsLazy } from "@webpack";
-import { Menu, RestAPI, React, Button, TextInput, ChannelStore, ContextMenuApi, PermissionStore, Forms, GuildChannelStore } from "@webpack/common";
+import { findStoreLazy } from "@webpack";
+import { Menu, RestAPI, React, Button, TextInput, ChannelStore, PermissionStore, Forms, GuildChannelStore } from "@webpack/common";
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
-import { ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, openModal, ModalSize } from "@utils/modal";
+import { ModalContent, ModalFooter, ModalHeader, ModalRoot, openModal, ModalSize } from "@utils/modal";
 
 const VoiceStateStore = findStoreLazy("VoiceStateStore");
-let banthisni = null;
-const sessionStore = findByPropsLazy("getSessionId");
 let isCurrentlyVcOwner = false;
 let currentVcChannel = null;
-let currentVcGuild = null; // Add this to track current guild
+let currentVcGuild = null;
 
 const settings = definePluginSettings({
     users: {
@@ -21,7 +19,7 @@ const settings = definePluginSettings({
     },
     store: {
         type: OptionType.STRING,
-        description: "reasons and shit",
+        description: "Reasons storage",
         default: "",
     },
     autoBanDelay: {
@@ -41,122 +39,6 @@ const settings = definePluginSettings({
     },
 });
 
-function isVoiceChannelOwner(guildId: string, channelId: string): boolean {
-    if (!guildId || !channelId) return false;
-    
-    try {
-        // Get the VC owner detector plugin settings
-        const vcOwnerPlugin = Vencord.Plugins.plugins.vcOwnerDetector;
-        if (!vcOwnerPlugin || !vcOwnerPlugin.settings) return false;
-        
-        // Check the simple boolean flag first (this is updated by the VC owner detector)
-        if (vcOwnerPlugin.settings.store.amivcowner) {
-            return true;
-        }
-        
-        // Fallback: replicate the VC owner detector logic
-        const guildDetectionSettings = isValidJson(vcOwnerPlugin.settings.store.guildidetectionslol);
-        const guildSetting = guildDetectionSettings.find(g => g.name === guildId);
-        
-        if (!guildSetting) return false;
-        
-        const channel = ChannelStore.getChannel(channelId);
-        if (!channel?.permissionOverwrites) return false;
-        
-        const permissions = Object.values(channel.permissionOverwrites);
-        const currentUserId = UserStore.getCurrentUser().id;
-        const permRequirement = guildSetting.permrequirements;
-        
-        for (const perm of permissions) {
-            const { id, allow } = perm;
-            
-            try {
-                const allowBigInt = toBigIntSafe(allow);
-                const reqBigInt = toBigIntSafe(permRequirement);
-                
-                if (allowBigInt === reqBigInt && id === currentUserId) {
-                    return true;
-                }
-            } catch (e) {
-                console.error("Permission conversion error:", e);
-            }
-        }
-        
-        return false;
-    } catch (e) {
-        console.error("VC owner check error:", e);
-        return false;
-    }
-}
-
-// Function to monitor VC ownership changes
-function checkVcOwnershipStatus() {
-    const currentUserId = UserStore.getCurrentUser().id;
-    const currentVoiceState = VoiceStateStore.getVoiceStateForUser(currentUserId);
-    
-    if (!currentVoiceState?.channelId) {
-        // Not in any VC
-        if (isCurrentlyVcOwner) {
-            isCurrentlyVcOwner = false;
-            currentVcChannel = null;
-            currentVcGuild = null; // Reset guild as well
-            if (settings.store.showVcOwnerStatus) {
-                Toasts.show({
-                    message: "🔴 No longer VC owner (left voice channel)",
-                    id: "vc-owner-status-left",
-                    type: Toasts.Type.MESSAGE,
-                    options: {
-                        position: Toasts.Position.BOTTOM,
-                        duration: 3000
-                    }
-                });
-            }
-        }
-        return;
-    }
-    
-    const channel = ChannelStore.getChannel(currentVoiceState.channelId);
-    if (!channel?.guild_id) return;
-    
-    const wasOwner = isCurrentlyVcOwner;
-    const wasInSameChannel = currentVcChannel === currentVoiceState.channelId;
-    
-    isCurrentlyVcOwner = isVoiceChannelOwner(channel.guild_id, currentVoiceState.channelId);
-    currentVcChannel = currentVoiceState.channelId;
-    currentVcGuild = channel.guild_id; // Store the guild ID
-    
-    // Show notifications for ownership changes
-    if (settings.store.showVcOwnerStatus && (!wasInSameChannel || wasOwner !== isCurrentlyVcOwner)) {
-        if (isCurrentlyVcOwner) {
-            Toasts.show({
-                message: "🟢 You are now the VC owner",
-                id: "vc-owner-status-gained",
-                type: Toasts.Type.SUCCESS,
-                options: {
-                    position: Toasts.Position.BOTTOM,
-                    duration: 3000
-                }
-            });
-            
-            // Auto-ban existing users in VC after a short delay
-            setTimeout(() => {
-                checkExistingUsersInVC(currentVoiceState.channelId);
-            }, 1000);
-        } else if (wasOwner) {
-            Toasts.show({
-                message: "🔴 No longer VC owner",
-                id: "vc-owner-status-lost",
-                type: Toasts.Type.MESSAGE,
-                options: {
-                    position: Toasts.Position.BOTTOM,
-                    duration: 3000
-                }
-            });
-        }
-    }
-}
-
-// Helper functions from the VC owner detector
 function toBigIntSafe(value: any): bigint {
     if (typeof value === "bigint") return value;
     if (typeof value === "number") return BigInt(value);
@@ -173,7 +55,141 @@ function isValidJson(data: string): any[] {
     }
 }
 
-// Bulk operations
+// Core VC owner detection - simplified but comprehensive
+function isVoiceChannelOwner(guildId: string, channelId: string): boolean {
+    if (!guildId || !channelId) return false;
+    
+    const currentUserId = UserStore.getCurrentUser().id;
+    
+    try {
+        // Method 1: Check vcOwnerDetector plugin flag
+        const vcOwnerPlugin = Vencord?.Plugins?.plugins?.vcOwnerDetector;
+        if (vcOwnerPlugin?.settings?.store?.amivcowner) {
+            return true;
+        }
+        
+        const channel = ChannelStore.getChannel(channelId);
+        if (!channel) return false;
+        
+        // Method 2: Check permission overwrites for VC owner permissions
+        if (channel.permissionOverwrites) {
+            const permissions = Object.values(channel.permissionOverwrites);
+            const vcOwnerPerms = [0x10n, 0x10000000n, 0x400000n, 0x800000n, 0x1000000n];
+            
+            for (const perm of permissions) {
+                const { id, allow } = perm;
+                if (id === currentUserId) {
+                    const allowBigInt = toBigIntSafe(allow);
+                    for (const requiredPerm of vcOwnerPerms) {
+                        if ((allowBigInt & requiredPerm) === requiredPerm) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Method 3: Check vcOwnerDetector guild settings
+        if (vcOwnerPlugin?.settings?.store?.guildidetectionslol) {
+            const guildSettings = isValidJson(vcOwnerPlugin.settings.store.guildidetectionslol);
+            const guildSetting = guildSettings.find(g => g.name === guildId);
+            
+            if (guildSetting?.permrequirements && channel.permissionOverwrites) {
+                const permissions = Object.values(channel.permissionOverwrites);
+                for (const perm of permissions) {
+                    const { id, allow } = perm;
+                    if (id === currentUserId) {
+                        const allowBigInt = toBigIntSafe(allow);
+                        const reqBigInt = toBigIntSafe(guildSetting.permrequirements);
+                        if (allowBigInt === reqBigInt) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Method 4: Check if guild owner or admin
+        const guild = GuildStore.getGuild(guildId);
+        if (guild?.ownerId === currentUserId) return true;
+        
+        const member = GuildMemberStore.getMember(guildId, currentUserId);
+        if (member?.roles) {
+            for (const roleId of member.roles) {
+                const role = guild?.roles?.[roleId];
+                if (role?.permissions) {
+                    const rolePerms = toBigIntSafe(role.permissions);
+                    if ((rolePerms & 0x8n) === 0x8n) return true;
+                }
+            }
+        }
+        
+        return false;
+    } catch (e) {
+        console.error("VC owner check error:", e);
+        return false;
+    }
+}
+
+function forceCheckVcOwnership(guildId?: string, channelId?: string): boolean {
+    const currentUserId = UserStore.getCurrentUser().id;
+    
+    if (!guildId || !channelId) {
+        const currentVoiceState = VoiceStateStore.getVoiceStateForUser(currentUserId);
+        if (currentVoiceState?.channelId) {
+            channelId = currentVoiceState.channelId;
+            const channel = ChannelStore.getChannel(channelId);
+            guildId = channel?.guild_id;
+        }
+    }
+    
+    if (!guildId || !channelId) return false;
+    
+    const isOwner = isVoiceChannelOwner(guildId, channelId);
+    
+    isCurrentlyVcOwner = isOwner;
+    currentVcChannel = channelId;
+    currentVcGuild = guildId;
+    
+    return isOwner;
+}
+
+function checkVcOwnershipStatus() {
+    const currentUserId = UserStore.getCurrentUser().id;
+    const currentVoiceState = VoiceStateStore.getVoiceStateForUser(currentUserId);
+    
+    if (!currentVoiceState?.channelId) {
+        if (isCurrentlyVcOwner || currentVcChannel || currentVcGuild) {
+            isCurrentlyVcOwner = false;
+            currentVcChannel = null;
+            currentVcGuild = null;
+        }
+        return;
+    }
+    
+    const channel = ChannelStore.getChannel(currentVoiceState.channelId);
+    if (!channel?.guild_id) return;
+    
+    const wasOwner = isCurrentlyVcOwner;
+    const actuallyIsOwner = forceCheckVcOwnership(channel.guild_id, currentVoiceState.channelId);
+    
+    if (settings.store.showVcOwnerStatus && wasOwner !== actuallyIsOwner) {
+        if (actuallyIsOwner) {
+            Toasts.show({
+                message: "🟢 You are now the VC owner",
+                type: Toasts.Type.SUCCESS,
+                options: { position: Toasts.Position.BOTTOM, duration: 3000 }
+            });
+        } else {
+            Toasts.show({
+                message: "🔴 Not the VC owner",
+                type: Toasts.Type.MESSAGE,
+                options: { position: Toasts.Position.BOTTOM, duration: 3000 }
+            });
+        }
+    }
+}
+
 function getAllUsersInVc(channelId: string): string[] {
     const currentUserId = UserStore.getCurrentUser().id;
     const voiceStates = VoiceStateStore.getVoiceStatesForChannel(channelId) ?? {};
@@ -190,62 +206,11 @@ function getAllUsersInCurrentVc(): string[] {
     return Object.keys(voiceStates).filter(userId => userId !== currentUserId);
 }
 
-function banAllUsersInVc(channelId: string): void {
-    const usersInVc = getAllUsersInVc(channelId);
-    if (usersInVc.length === 0) {
-        Toasts.show({
-            message: "No other users in this VC",
-            id: "no-users-in-vc",
-            type: Toasts.Type.MESSAGE,
-            options: { position: Toasts.Position.BOTTOM }
-        });
-        return;
-    }
-    
-    const currentBannedUsers = settings.store.users.split('/').filter(item => item !== '');
-    const newUsers = usersInVc.filter(userId => !currentBannedUsers.includes(userId));
-    
-    if (newUsers.length === 0) {
-        Toasts.show({
-            message: "All users in VC are already on auto-ban list",
-            id: "all-already-banned",
-            type: Toasts.Type.MESSAGE,
-            options: { position: Toasts.Position.BOTTOM }
-        });
-        return;
-    }
-    
-    const allBannedUsers = [...currentBannedUsers, ...newUsers];
-    settings.store.users = allBannedUsers.join('/');
-    
-    Toasts.show({
-        message: `Added ${newUsers.length} users to auto-ban list`,
-        id: "bulk-ban-added",
-        type: Toasts.Type.SUCCESS,
-        options: { position: Toasts.Position.BOTTOM }
-    });
-    
-    // Check if we're in the target channel and are VC owner
-    const currentUserId = UserStore.getCurrentUser().id;
-    const currentVoiceState = VoiceStateStore.getVoiceStateForUser(currentUserId);
-    const channel = ChannelStore.getChannel(channelId);
-    
-    if (currentVoiceState?.channelId === channelId && 
-        channel?.guild_id && 
-        isVoiceChannelOwner(channel.guild_id, channelId)) {
-        // Auto-ban the new users if we're VC owner in this channel
-        newUsers.forEach(userId => {
-            setTimeout(() => banninguser(userId), Math.random() * 1000); // Stagger bans to avoid rate limits
-        });
-    }
-}
-
 function banAllUsersInCurrentVc(): void {
     const usersInVc = getAllUsersInCurrentVc();
     if (usersInVc.length === 0) {
         Toasts.show({
             message: "No other users in current VC",
-            id: "no-users-in-vc",
             type: Toasts.Type.MESSAGE,
             options: { position: Toasts.Position.BOTTOM }
         });
@@ -258,7 +223,6 @@ function banAllUsersInCurrentVc(): void {
     if (newUsers.length === 0) {
         Toasts.show({
             message: "All users in VC are already on auto-ban list",
-            id: "all-already-banned",
             type: Toasts.Type.MESSAGE,
             options: { position: Toasts.Position.BOTTOM }
         });
@@ -270,25 +234,26 @@ function banAllUsersInCurrentVc(): void {
     
     Toasts.show({
         message: `Added ${newUsers.length} users to auto-ban list`,
-        id: "bulk-ban-added",
         type: Toasts.Type.SUCCESS,
         options: { position: Toasts.Position.BOTTOM }
     });
     
-    // Auto-ban the new users if we're VC owner
-    if (isCurrentlyVcOwner) {
-        newUsers.forEach(userId => {
-            setTimeout(() => banninguser(userId), Math.random() * 1000); // Stagger bans to avoid rate limits
-        });
+    const currentUserId = UserStore.getCurrentUser().id;
+    const currentVoiceState = VoiceStateStore.getVoiceStateForUser(currentUserId);
+    if (currentVoiceState?.channelId) {
+        const channel = ChannelStore.getChannel(currentVoiceState.channelId);
+        if (channel?.guild_id && forceCheckVcOwnership(channel.guild_id, currentVoiceState.channelId)) {
+            newUsers.forEach((userId, index) => {
+                setTimeout(() => banninguser(userId), (index + 1) * Math.random() * 1000);
+            });
+        }
     }
 }
 
-// User context menu patch (for individual auto-ban)
 function makeUserContextMenuPatch(): NavContextMenuPatchCallback {
     return (children, props) => {
         if (!props) return;
         
-        // Add individual user auto-ban option
         const ban = MenuItem(props.user.id);
         if (ban) {
             children.splice(-1, 0, <Menu.MenuGroup>{ban}</Menu.MenuGroup>);
@@ -296,17 +261,12 @@ function makeUserContextMenuPatch(): NavContextMenuPatchCallback {
     };
 }
 
-// Channel context menu patch (for bulk auto-ban)
 function makeChannelContextMenuPatch(): NavContextMenuPatchCallback {
     return (children, props) => {
-        if (!props || !props.channel) return;
+        if (!props || !props.channel || props.channel.type !== 2) return;
         
-        // Only show for voice channels
-        if (props.channel.type !== 2) return; // Type 2 is voice channel
-        
-        // Add bulk autoban submenu if enabled
         if (settings.store.enableBulkAutoban) {
-            const bulkAutoBanSubmenu = BulkAutoBanSubmenuForChannel(props.channel.id);
+            const bulkAutoBanSubmenu = BulkAutoBanSubmenu();
             if (bulkAutoBanSubmenu) {
                 children.splice(-1, 0, <Menu.MenuGroup>{bulkAutoBanSubmenu}</Menu.MenuGroup>);
             }
@@ -314,55 +274,16 @@ function makeChannelContextMenuPatch(): NavContextMenuPatchCallback {
     };
 }
 
-function BulkAutoBanSubmenuForChannel(channelId: string) {
-    const currentUserId = UserStore.getCurrentUser().id;
-    const channel = ChannelStore.getChannel(channelId);
-    
-    if (!channel || !channel.guild_id) return null;
-    
-    const usersInVc = getAllUsersInVc(channelId);
-    const currentVoiceState = VoiceStateStore.getVoiceStateForUser(currentUserId);
-    const isInThisChannel = currentVoiceState?.channelId === channelId;
-    const isOwnerOfThisChannel = isInThisChannel && isVoiceChannelOwner(channel.guild_id, channelId);
-    
-    let vcOwnerStatus;
-    if (isInThisChannel) {
-        vcOwnerStatus = isOwnerOfThisChannel ? "🟢 VC Owner" : "🔴 Not VC Owner";
-    } else {
-        vcOwnerStatus = "⚫ Not in this VC";
-    }
-    
-    return (
-        <Menu.MenuItem
-            id="bulk-autoban-submenu-channel"
-            label="Bulk Autoban"
-        >
-            <Menu.MenuItem
-                id="bulk-autoban-all-in-channel"
-                label={`Ban All in VC (${usersInVc.length} users)`}
-                color="danger"
-                action={() => banAllUsersInVc(channelId)}
-            />
-            <Menu.MenuSeparator />
-            <Menu.MenuItem
-                id="bulk-autoban-channel-status"
-                label={vcOwnerStatus}
-                disabled={true}
-                color={isOwnerOfThisChannel ? "brand" : "default"}
-            />
-        </Menu.MenuItem>
-    );
-}
-
 function BulkAutoBanSubmenu() {
     const currentUserId = UserStore.getCurrentUser().id;
     const currentVoiceState = VoiceStateStore.getVoiceStateForUser(currentUserId);
     
-    // Only show if user is in a voice channel
     if (!currentVoiceState?.channelId) return null;
     
     const usersInVc = getAllUsersInCurrentVc();
-    const vcOwnerStatus = isCurrentlyVcOwner ? "🟢 VC Owner" : "🔴 Not VC Owner";
+    const channel = ChannelStore.getChannel(currentVoiceState.channelId);
+    const actuallyIsOwner = channel?.guild_id ? forceCheckVcOwnership(channel.guild_id, currentVoiceState.channelId) : false;
+    const vcOwnerStatus = actuallyIsOwner ? "🟢 VC Owner" : "🔴 Not VC Owner";
     
     return (
         <Menu.MenuItem
@@ -380,7 +301,7 @@ function BulkAutoBanSubmenu() {
                 id="bulk-autoban-status"
                 label={vcOwnerStatus}
                 disabled={true}
-                color={isCurrentlyVcOwner ? "brand" : "default"}
+                color={actuallyIsOwner ? "brand" : "default"}
             />
         </Menu.MenuItem>
     );
@@ -405,18 +326,13 @@ function MenuItem(id: string) {
                 setIsChecked(!isChecked);
                 settings.store.users = updatedList.join("/");
                 
-                // If user was just added to ban list, attempt immediate ban
                 if (wasAdded) {
                     banninguser(id);
                 } else {
-                    // User was removed from list
                     Toasts.show({
                         message: `Removed ${id} from Auto-Ban List`,
-                        id: "auto-ban-removed",
                         type: Toasts.Type.MESSAGE,
-                        options: {
-                            position: Toasts.Position.BOTTOM
-                        }
+                        options: { position: Toasts.Position.BOTTOM }
                     });
                 }
             }}
@@ -426,118 +342,62 @@ function MenuItem(id: string) {
 
 function banninguser(id) {
     const currentUserId = UserStore.getCurrentUser().id;
-    
-    // Get current voice state with multiple fallback methods
-    let currentVoiceState = VoiceStateStore.getVoiceStateForUser(currentUserId);
-    let channelId = currentVoiceState?.channelId;
+    let channelId = null;
     let guildId = null;
     
-    // First fallback: use global tracking variables
-    if (!channelId && currentVcChannel) {
-        channelId = currentVcChannel;
-        guildId = currentVcGuild;
-        console.log("Using fallback channel and guild:", channelId, guildId);
-    }
-    
-    // Second fallback: try to find user in any voice channel
-    if (!channelId) {
-        // Look through all guilds to find where current user is in voice
-        const guilds = GuildStore.getGuilds();
-        for (const guild of Object.values(guilds)) {
-            const channels = GuildChannelStore.getVoiceChannels(guild.id);
-            for (const channel of channels) {
-                const voiceStates = VoiceStateStore.getVoiceStatesForChannel(channel.id) ?? {};
-                if (Object.keys(voiceStates).includes(currentUserId)) {
-                    channelId = channel.id;
-                    guildId = guild.id;
-                    console.log("Found user in voice channel via search:", channelId, guildId);
-                    break;
-                }
-            }
-            if (channelId) break;
-        }
-    }
-    
-    if (!channelId) {
-        Toasts.show({
-            message: `Not in voice channel - ${id} added to auto-ban list`,
-            id: "not-in-vc-added",
-            type: Toasts.Type.MESSAGE,
-            options: {
-                position: Toasts.Position.BOTTOM
-            }
-        });
-        return;
-    }
-    
-    // Get guild ID if we don't have it yet
-    if (!guildId) {
+    // Find current VC
+    const currentVoiceState = VoiceStateStore.getVoiceStateForUser(currentUserId);
+    if (currentVoiceState?.channelId) {
+        channelId = currentVoiceState.channelId;
         const channel = ChannelStore.getChannel(channelId);
         guildId = channel?.guild_id;
     }
     
-    if (!guildId) {
+    // Fallback to global tracking
+    if (!channelId && currentVcChannel) {
+        channelId = currentVcChannel;
+        guildId = currentVcGuild;
+    }
+    
+    if (!channelId || !guildId) {
         Toasts.show({
-            message: `Cannot determine guild - ${id} added to auto-ban list`,
-            id: "no-guild-added",
+            message: `Not in voice channel - ${id} added to auto-ban list`,
             type: Toasts.Type.MESSAGE,
-            options: {
-                position: Toasts.Position.BOTTOM
-            }
+            options: { position: Toasts.Position.BOTTOM }
         });
         return;
     }
     
-    // Check VC ownership with multiple methods
-    let isOwner = false;
-    
-    // Method 1: Use global tracking if we're in the same channel
-    if (channelId === currentVcChannel && isCurrentlyVcOwner) {
-        isOwner = true;
-        console.log("Using global VC owner status");
-    } else {
-        // Method 2: Direct check using VC owner detector logic
-        isOwner = isVoiceChannelOwner(guildId, channelId);
-        console.log("Direct VC owner check result:", isOwner);
-    }
+    // Check ownership
+    const isOwner = forceCheckVcOwnership(guildId, channelId);
     
     if (!isOwner) {
         Toasts.show({
             message: `Not the VC owner - ${id} added to auto-ban list`,
-            id: "not-vc-owner-added-general",
             type: Toasts.Type.MESSAGE,
-            options: {
-                position: Toasts.Position.BOTTOM
-            }
+            options: { position: Toasts.Position.BOTTOM }
         });
         return;
     }
     
-    // Check if target user is actually in the same VC
+    // Check if target is in same VC
     const targetVoiceState = VoiceStateStore.getVoiceStateForUser(id);
     if (!targetVoiceState?.channelId || targetVoiceState.channelId !== channelId) {
         Toasts.show({
             message: `User ${id} not in your VC - added to auto-ban list`,
-            id: "target-not-in-vc",
             type: Toasts.Type.MESSAGE,
-            options: {
-                position: Toasts.Position.BOTTOM
-            }
+            options: { position: Toasts.Position.BOTTOM }
         });
         return;
     }
     
-    // We are VC owner and target is in same VC - proceed with ban
+    // Execute ban
     Toasts.show({
         message: `Added ${id} to Auto-Ban List & Auto-banning`,
-        id: "auto-ban-success",
         type: Toasts.Type.SUCCESS,
-        options: {
-            position: Toasts.Position.BOTTOM
-        }
+        options: { position: Toasts.Position.BOTTOM }
     });
     
-    // Add configurable delay before banning
     setTimeout(() => {
         RestAPI.post({
             url: `/channels/${channelId}/messages`,
@@ -546,46 +406,31 @@ function banninguser(id) {
     }, settings.store.autoBanDelay * 1000);
 }
 
-// New function to check existing users in voice channel
 function checkExistingUsersInVC(channelId: string) {
     const voiceStates = VoiceStateStore.getVoiceStatesForChannel(channelId) ?? {};
     const bannedUsers = settings.store.users.split('/').filter(item => item !== '');
     const currentUserId = UserStore.getCurrentUser().id;
     
-    // Check if current user is in the voice channel
     if (!Object.keys(voiceStates).includes(currentUserId)) return;
     
-    // Get guild ID for the channel
     const channel = ChannelStore.getChannel(channelId);
-    if (!channel?.guild_id) return;
+    if (!channel?.guild_id || !forceCheckVcOwnership(channel.guild_id, channelId)) return;
     
-    // Check if we're actually the VC owner using the detector's logic
-    if (!isVoiceChannelOwner(channel.guild_id, channelId)) {
-        return;
-    }
-    
-    // Check each user in the voice channel
     Object.keys(voiceStates).forEach((userId, index) => {
-        if (userId === currentUserId) return; // Don't ban yourself
+        if (userId === currentUserId || !bannedUsers.includes(userId)) return;
         
-        if (bannedUsers.includes(userId)) {
-            Toasts.show({
-                message: `Auto banning existing User ${userId} in voice channel <3`,
-                id: "auto-ban-existing",
-                type: Toasts.Type.FAILURE,
-                options: {
-                    position: Toasts.Position.BOTTOM
-                }
+        Toasts.show({
+            message: `Auto banning existing User ${userId}`,
+            type: Toasts.Type.FAILURE,
+            options: { position: Toasts.Position.BOTTOM }
+        });
+        
+        setTimeout(() => {
+            RestAPI.post({
+                url: `/channels/${channelId}/messages`,
+                body: { content: `!voice-ban ${userId}`, nonce: (Math.floor(Math.random() * 10000000000000)) }
             });
-            
-            // Stagger bans to avoid rate limits
-            setTimeout(() => {
-                RestAPI.post({
-                    url: `/channels/${channelId}/messages`,
-                    body: { content: `!voice-ban ${userId}`, nonce: (Math.floor(Math.random() * 10000000000000)) }
-                });
-            }, (index + 1) * settings.store.autoBanDelay * 1000);
-        }
+        }, (index + 1) * settings.store.autoBanDelay * 1000);
     });
 }
 
@@ -636,7 +481,7 @@ function EncModals(props) {
 
 export default definePlugin({
     name: "autoBan",
-    description: "Tools to automatically ban users. Fixed by curve",
+    description: "Tools to automatically ban users. Enhanced VC owner detection",
     authors: [{ name: "curve", id: 818846027511103508n }, { name: "dot", id: 1400606596521791773n }],
     settings,
     contextMenus: {
@@ -645,18 +490,15 @@ export default definePlugin({
     },
     start() { 
         FluxDispatcher.subscribe("VOICE_STATE_UPDATES", cb);
-        
-        // Start monitoring VC ownership changes
-        this.vcOwnershipInterval = setInterval(checkVcOwnershipStatus, 2000);
-        
-        // Initial check
-        setTimeout(checkVcOwnershipStatus, 1000);
+        this.vcOwnershipInterval = setInterval(checkVcOwnershipStatus, 1500);
+        setTimeout(() => {
+            checkVcOwnershipStatus();
+            forceCheckVcOwnership();
+        }, 1000);
     },
     
     stop() {
         FluxDispatcher.unsubscribe("VOICE_STATE_UPDATES", cb);
-        
-        // Stop monitoring VC ownership
         if (this.vcOwnershipInterval) {
             clearInterval(this.vcOwnershipInterval);
         }
@@ -670,43 +512,51 @@ const cb = async (e) => {
     const currentUserId = UserStore.getCurrentUser().id;
     const Cvcstates = VoiceStateStore.getVoiceStatesForChannel(state?.channelId) ?? {};
     
-    // Check if current user just joined a voice channel
-    if (state.userId === currentUserId && state?.channelId !== state?.oldChannelId && state?.channelId) {
-        // Small delay to ensure voice state is fully updated, then check ownership
-        setTimeout(() => {
-            checkVcOwnershipStatus();
-        }, 500);
+    // Handle current user VC changes
+    if (state.userId === currentUserId) {
+        if (state?.channelId !== state?.oldChannelId && state?.channelId) {
+            setTimeout(() => {
+                const channel = ChannelStore.getChannel(state.channelId);
+                if (channel?.guild_id) {
+                    forceCheckVcOwnership(channel.guild_id, state.channelId);
+                    checkExistingUsersInVC(state.channelId);
+                }
+            }, 750);
+        }
+        
+        if (!state?.channelId && state?.oldChannelId) {
+            isCurrentlyVcOwner = false;
+            currentVcChannel = null;
+            currentVcGuild = null;
+        }
         return;
     }
     
-    // Original logic for when someone else joins
+    // Handle other users joining
     if (state?.channelId == state?.oldChannelId) return;
     if (!Object.keys(Cvcstates).includes(currentUserId)) return;
     
-    if (settings.store.users.split('/').filter(item => item !== '').includes(state.userId)) {
-        // Use the VC owner detector's logic instead of the unreliable plugin flag
-        if (!isVoiceChannelOwner(state.guildId, state.channelId)) {
+    if (state?.channelId && settings.store.users.split('/').filter(item => item !== '').includes(state.userId)) {
+        const channel = ChannelStore.getChannel(state.channelId);
+        if (!channel?.guild_id) return;
+        
+        const isOwner = forceCheckVcOwnership(channel.guild_id, state.channelId);
+        
+        if (!isOwner) {
             Toasts.show({
                 message: `Not the VC owner - ${state.userId} already on auto-ban list`,
-                id: "not-vc-owner-existing",
                 type: Toasts.Type.MESSAGE,
-                options: {
-                    position: Toasts.Position.BOTTOM
-                }
+                options: { position: Toasts.Position.BOTTOM }
             });
             return;
         }
         
         Toasts.show({
             message: `Auto banning User ${state.userId}`,
-            id: "auto-ban",
             type: Toasts.Type.FAILURE,
-            options: {
-                position: Toasts.Position.BOTTOM
-            }
+            options: { position: Toasts.Position.BOTTOM }
         });
         
-        // Add configurable delay before auto-banning
         setTimeout(() => {
             RestAPI.post({
                 url: `/channels/${state.channelId}/messages`,
