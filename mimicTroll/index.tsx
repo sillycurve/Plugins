@@ -197,8 +197,7 @@ class ContentFilter {
 
     public static getBlockedResponse(): string {
         const responses = [
-            settings.store.blockedResponse,
-            "Nice try buddy",
+            settings.store.blockedResponse
         ];
 
         return responses[Math.floor(Math.random() * responses.length)];
