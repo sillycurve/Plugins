@@ -1,202 +1,268 @@
 import { ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { React, Text } from "@webpack/common";
-import { definePluginSettings } from "@api/Settings";
-import definePlugin, { OptionType } from "@utils/types";
-import { FluxDispatcher, UserStore, useState, useEffect } from "@webpack/common";
+import { findByPropsLazy } from "@webpack";
+import definePlugin from "@utils/types";
+import { FluxDispatcher, Parser, UserStore, useState, useEffect } from "@webpack/common";
 import { Util } from "Vencord";
+import { sleep } from "@utils/misc";
 import { Constants, RestAPI } from "@webpack/common";
-import { Button, TextInput } from "@webpack/common";
-
-const settings = definePluginSettings({
-    githubToken: {
-        description: "GitHub Personal Access Token (with gist permissions)",
-        type: OptionType.STRING,
-        default: "",
-        placeholder: "ghp_xxxxxxxxxxxxxxxxxxxx"
-    },
-    githubGistId: {
-        description: "Shared GitHub Gist ID for ban list sync",
-        type: OptionType.STRING,
-        default: "",
-        placeholder: "1234567890abcdef1234567890abcdef"
-    },
-    githubUsername: {
-        description: "Your identifier (curve, dot, or wowza)",
-        type: OptionType.STRING,
-        default: "",
-        placeholder: "curve"
-    },
-    enableAutoSync: {
-        description: "Auto-sync ban list every 5 minutes",
-        type: OptionType.BOOLEAN,
-        default: false
-    }
-});
+import { Button } from "@webpack/common";
+import { TextInput } from "@webpack/common";
 
 export function openGuildInfoModal() {
-    openModal(modalProps => <BanListManager modalProps={modalProps} />);
+    openModal(modalProps => <UserList modalProps={modalProps} />);
 }
 
-// Get GitHub config from plugin settings
-function getGithubConfig() {
-    return {
-        token: settings.store.githubToken || "",
-        gistId: settings.store.githubGistId || "",
-        username: settings.store.githubUsername || "Unknown"
+// Simple icons
+const SearchIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M15.5 14H14.71L14.43 13.73C15.41 12.59 16 11.11 16 9.5C16 5.91 13.09 3 9.5 3C5.91 3 3 5.91 3 9.5C3 13.09 5.91 16 9.5 16C11.11 16 12.59 15.41 13.73 14.43L14 14.71V15.5L19 20.49L20.49 19L15.5 14ZM9.5 14C7.01 14 5 11.99 5 9.5C7.01 5 9.5 5C11.99 5 14 7.01 14 9.5C14 11.99 11.99 14 9.5 14Z"/>
+    </svg>
+);
+
+const EditIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="white">
+        <path d="M3 17.25V21H6.75L17.81 9.94L14.06 6.19L3 17.25ZM20.71 7.04C21.1 6.65 21.1 6.02 20.71 5.63L18.37 3.29C17.98 2.9 17.35 2.9 16.96 3.29L15.13 5.12L18.88 8.87L20.71 7.04Z"/>
+    </svg>
+);
+
+const DownloadIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+    </svg>
+);
+
+const UploadIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20Z"/>
+    </svg>
+);
+
+const TrashIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+    </svg>
+);
+
+// Simplified user fetching
+async function fetchUser(id: string) {
+    let user = UserStore.getUser(id);
+    if (user) return user;
+
+    try {
+        const response = await RestAPI.get({ url: Constants.Endpoints.USER(id) });
+        FluxDispatcher.dispatch({
+            type: "USER_UPDATE",
+            user: response.body,
+        });
+        await sleep(100); // Simple rate limiting
+        return UserStore.getUser(id);
+    } catch (error) {
+        console.warn(`Failed to fetch user ${id}:`, error);
+        return null;
+    }
+}
+
+// Export ban list to JSON
+function exportBanList(pluginName: string, usersKey: string, reasonsKey?: string) {
+    const plugin = Vencord.Plugins.plugins[pluginName];
+    if (!plugin?.settings?.store) return;
+
+    // Get users
+    const userString = plugin.settings.store[usersKey] || "";
+    const userList = userString.split('/').filter(Boolean);
+
+    // Get reasons
+    let reasonMap: Record<string, string> = {};
+    if (reasonsKey && plugin.settings.store[reasonsKey]) {
+        const reasonString = plugin.settings.store[reasonsKey];
+        const reasonEntries = reasonString.split('.').filter(Boolean);
+        
+        reasonEntries.forEach(entry => {
+            const [id, reason] = entry.split('/');
+            if (id && reason) reasonMap[id] = reason;
+        });
+    }
+
+    // Create export data
+    const exportData = {
+        version: "1.0",
+        plugin: pluginName,
+        exportDate: new Date().toISOString(),
+        users: userList.map(id => ({
+            id,
+            reason: reasonMap[id] || ""
+        }))
     };
+
+    // Download as JSON file
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${pluginName}-banlist-${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
 }
 
-// Sync to GitHub Gist
-async function syncToGist(pluginName: string, usersKey: string) {
-    const config = getGithubConfig();
-    if (!config.token || !config.gistId) {
-        alert('Configure GitHub token and Gist ID in plugin settings first.');
-        return;
-    }
+// Import ban list from JSON
+function importBanList(
+    pluginName: string, 
+    usersKey: string, 
+    reasonsKey: string | undefined,
+    onUpdate: () => void
+) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e) => {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        if (!file) return;
 
-    try {
-        const plugin = Vencord.Plugins.plugins[pluginName];
-        const userString = plugin.settings.store[usersKey] || "";
-        const userList = userString.split('/').filter(Boolean);
-
-        const exportData = {
-            plugin: pluginName,
-            lastUpdated: new Date().toISOString(),
-            updatedBy: config.username,
-            users: userList
-        };
-
-        const response = await fetch(`https://api.github.com/gists/${config.gistId}`, {
-            method: 'PATCH',
-            headers: {
-                'Authorization': `token ${config.token}`,
-                'Accept': 'application/vnd.github.v3+json',
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                files: {
-                    [`${pluginName}-banlist.json`]: {
-                        content: JSON.stringify(exportData, null, 2)
-                    }
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const importData = JSON.parse(e.target?.result as string);
+                
+                // Validate import data
+                if (!importData.users || !Array.isArray(importData.users)) {
+                    alert('Invalid ban list format!');
+                    return;
                 }
-            })
-        });
 
-        if (response.ok) {
-            alert(`Synced ${userList.length} users to shared ban list!`);
-        } else {
-            throw new Error(`GitHub API error: ${response.status}`);
-        }
-    } catch (error) {
-        console.error('Sync failed:', error);
-        alert(`Failed to sync: ${error.message}`);
-    }
-}
+                const plugin = Vencord.Plugins.plugins[pluginName];
+                if (!plugin?.settings?.store) return;
 
-// Sync from GitHub Gist
-async function syncFromGist(pluginName: string, usersKey: string, onUpdate: () => void) {
-    const config = getGithubConfig();
-    if (!config.token || !config.gistId) {
-        alert('Configure GitHub token and Gist ID in plugin settings first.');
-        return;
-    }
+                // Get existing data
+                const existingUserString = plugin.settings.store[usersKey] || "";
+                const existingUsers = existingUserString.split('/').filter(Boolean);
+                
+                let existingReasons: Record<string, string> = {};
+                if (reasonsKey && plugin.settings.store[reasonsKey]) {
+                    const reasonString = plugin.settings.store[reasonsKey];
+                    const reasonEntries = reasonString.split('.').filter(Boolean);
+                    
+                    reasonEntries.forEach(entry => {
+                        const [id, reason] = entry.split('/');
+                        if (id && reason) existingReasons[id] = reason;
+                    });
+                }
 
-    try {
-        const response = await fetch(`https://api.github.com/gists/${config.gistId}`, {
-            headers: {
-                'Authorization': `token ${config.token}`,
-                'Accept': 'application/vnd.github.v3+json',
+                // Merge data (override duplicates, add new ones)
+                const mergedUsers = [...existingUsers];
+                const mergedReasons = { ...existingReasons };
+
+                importData.users.forEach((userData: any) => {
+                    if (userData.id && !mergedUsers.includes(userData.id)) {
+                        mergedUsers.push(userData.id);
+                    }
+                    if (userData.id && userData.reason) {
+                        mergedReasons[userData.id] = userData.reason;
+                    }
+                });
+
+                // Save merged data
+                plugin.settings.store[usersKey] = mergedUsers.join('/');
+                
+                if (reasonsKey) {
+                    const reasonEntries = Object.entries(mergedReasons)
+                        .filter(([id, reason]) => reason.trim())
+                        .map(([id, reason]) => `${id}/${reason}`);
+                    plugin.settings.store[reasonsKey] = reasonEntries.join('.');
+                }
+
+                const importedCount = importData.users.length;
+                const newCount = importData.users.filter((u: any) => !existingUsers.includes(u.id)).length;
+                
+                alert(`Import successful!\n\nImported: ${importedCount} users\nNew users added: ${newCount}\nDuplicates merged: ${importedCount - newCount}`);
+                onUpdate();
+                
+            } catch (error) {
+                console.error('Import error:', error);
+                alert('Failed to import ban list. Please check the file format.');
             }
-        });
+        };
+        reader.readAsText(file);
+    };
+    input.click();
+}
 
-        if (!response.ok) {
-            throw new Error(`GitHub API error: ${response.status}`);
-        }
+// Clear entire ban list
+function clearBanList(
+    pluginName: string, 
+    usersKey: string, 
+    reasonsKey: string | undefined,
+    onUpdate: () => void
+) {
+    const confirmed = confirm('Are you sure you want to clear the entire ban list? This action cannot be undone!');
+    if (!confirmed) return;
 
-        const gistData = await response.json();
-        const fileName = `${pluginName}-banlist.json`;
+    const plugin = Vencord.Plugins.plugins[pluginName];
+    if (!plugin?.settings?.store) return;
 
-        if (!gistData.files[fileName]) {
-            alert('No shared ban list found for this plugin.');
-            return;
-        }
-
-        const importData = JSON.parse(gistData.files[fileName].content);
-        const plugin = Vencord.Plugins.plugins[pluginName];
-
-        const existingUsers = (plugin.settings.store[usersKey] || "").split('/').filter(Boolean);
-        const mergedUsers = [...new Set([...existingUsers, ...importData.users])];
-
-        plugin.settings.store[usersKey] = mergedUsers.join('/');
-
-        const newCount = importData.users.filter(u => !existingUsers.includes(u)).length;
-        const lastUpdated = new Date(importData.lastUpdated).toLocaleString();
-
-        alert(`Sync complete!\nNew users: ${newCount}\nLast updated: ${lastUpdated}\nBy: ${importData.updatedBy}`);
-        onUpdate();
-
-    } catch (error) {
-        console.error('Sync failed:', error);
-        alert(`Failed to sync: ${error.message}`);
+    plugin.settings.store[usersKey] = '';
+    if (reasonsKey) {
+        plugin.settings.store[reasonsKey] = '';
     }
+    
+    alert('Ban list cleared successfully!');
+    onUpdate();
 }
 
-// Auto-sync every 5 minutes
-let autoSyncInterval: NodeJS.Timeout | null = null;
-
-function startAutoSync(pluginName: string, usersKey: string, onUpdate: () => void) {
-    if (!settings.store.enableAutoSync) return;
-
-    if (autoSyncInterval) clearInterval(autoSyncInterval);
-    autoSyncInterval = setInterval(() => {
-        syncFromGist(pluginName, usersKey, onUpdate);
-    }, 5 * 60 * 1000);
-}
-
-function stopAutoSync() {
-    if (autoSyncInterval) {
-        clearInterval(autoSyncInterval);
-        autoSyncInterval = null;
-    }
-}
-
-// Ban list component
-function BanList({ pluginName, usersKey, title }: { pluginName: string; usersKey: string; title: string }) {
+// Single ban list component
+function BanList({ 
+    pluginName, 
+    usersKey, 
+    reasonsKey, 
+    title 
+}: { 
+    pluginName: string;
+    usersKey: string;
+    reasonsKey?: string;
+    title: string;
+}) {
     const [users, setUsers] = useState<string[]>([]);
     const [userMap, setUserMap] = useState<Record<string, any>>({});
+    const [reasons, setReasons] = useState<Record<string, string>>({});
+    const [editingReasons, setEditingReasons] = useState<Record<string, boolean>>({});
     const [searchTerm, setSearchTerm] = useState("");
     const [updateTrigger, setUpdateTrigger] = useState(0);
 
     const plugin = Vencord.Plugins.plugins[pluginName];
+
     const triggerUpdate = () => setUpdateTrigger(prev => prev + 1);
 
-    // Load users from plugin settings
+    // Load data from plugin settings
     useEffect(() => {
         if (!plugin?.settings?.store) return;
-        const userString = plugin.settings.store[usersKey] || "";
-        setUsers(userString.split('/').filter(Boolean));
-    }, [plugin, usersKey, updateTrigger]);
 
-    // Start auto-sync
-    useEffect(() => {
-        startAutoSync(pluginName, usersKey, triggerUpdate);
-        return () => stopAutoSync();
-    }, []);
+        // Load users
+        const userString = plugin.settings.store[usersKey] || "";
+        const userList = userString.split('/').filter(Boolean);
+        setUsers(userList);
+
+        // Load reasons if available
+        if (reasonsKey && plugin.settings.store[reasonsKey]) {
+            const reasonString = plugin.settings.store[reasonsKey];
+            const reasonEntries = reasonString.split('.').filter(Boolean);
+            const reasonMap: Record<string, string> = {};
+            
+            reasonEntries.forEach(entry => {
+                const [id, reason] = entry.split('/');
+                if (id && reason) reasonMap[id] = reason;
+            });
+            
+            setReasons(reasonMap);
+        }
+    }, [plugin, usersKey, reasonsKey, updateTrigger]);
 
     // Fetch user data
     useEffect(() => {
         users.forEach(async (id) => {
             if (!userMap[id]) {
-                let user = UserStore.getUser(id);
-                if (!user) {
-                    try {
-                        const response = await RestAPI.get({ url: Constants.Endpoints.USER(id) });
-                        FluxDispatcher.dispatch({ type: "USER_UPDATE", user: response.body });
-                        user = UserStore.getUser(id);
-                    } catch (error) {
-                        console.warn(`Failed to fetch user ${id}:`, error);
-                    }
-                }
+                const user = await fetchUser(id);
                 if (user) {
                     setUserMap(prev => ({ ...prev, [id]: user }));
                 }
@@ -204,100 +270,350 @@ function BanList({ pluginName, usersKey, title }: { pluginName: string; usersKey
         });
     }, [users]);
 
+    // Filter users based on search
     const filteredUsers = users.filter(id => {
         if (!searchTerm.trim()) return true;
+        
         const user = userMap[id];
-        const search = searchTerm.toLowerCase();
-        return user?.username?.toLowerCase().includes(search) ||
-               user?.globalName?.toLowerCase().includes(search) ||
-               id.includes(searchTerm);
+        const searchLower = searchTerm.toLowerCase();
+        
+        return (
+            user?.username?.toLowerCase().includes(searchLower) ||
+            user?.globalName?.toLowerCase().includes(searchLower) ||
+            id.includes(searchTerm) ||
+            reasons[id]?.toLowerCase().includes(searchLower)
+        );
     });
 
     const removeUser = (id: string) => {
         const newUsers = users.filter(uid => uid !== id);
-        plugin.settings.store[usersKey] = newUsers.join('/');
+        const updatedStore = newUsers.length ? newUsers.join('/') : '';
+        
+        plugin.settings.store[usersKey] = updatedStore;
         setUsers(newUsers);
+
+        // Remove reason if it exists
+        if (reasonsKey && plugin.settings.store[reasonsKey]) {
+            const currentReasons = plugin.settings.store[reasonsKey].split('.').filter(Boolean);
+            const updatedReasons = currentReasons.filter(entry => !entry.startsWith(`${id}/`));
+            plugin.settings.store[reasonsKey] = updatedReasons.join('.');
+        }
+    };
+
+    const saveReason = (id: string, newReason: string) => {
+        if (!reasonsKey) return;
+
+        setReasons(prev => ({ ...prev, [id]: newReason }));
+        setEditingReasons(prev => ({ ...prev, [id]: false }));
+
+        // Update plugin store
+        const currentReasons = (plugin.settings.store[reasonsKey] || "").split('.').filter(Boolean);
+        const updatedReasons = currentReasons.filter(entry => !entry.startsWith(`${id}/`));
+        
+        if (newReason.trim()) {
+            updatedReasons.push(`${id}/${newReason}`);
+        }
+        
+        plugin.settings.store[reasonsKey] = updatedReasons.join('.');
     };
 
     return (
-        <div style={{ padding: "20px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
-                <Text variant="heading-lg/semibold" style={{ color: "white" }}>
-                    {title} ({users.length} users)
-                </Text>
-
+        <div style={{ 
+            padding: "20px",
+            backgroundColor: "var(--background-primary)",
+            borderRadius: "8px",
+            border: "1px solid var(--background-modifier-accent)"
+        }}>
+            {/* Header with count and controls */}
+            <div style={{ 
+                display: "flex", 
+                alignItems: "center", 
+                justifyContent: "space-between",
+                marginBottom: "20px",
+                paddingBottom: "12px",
+                borderBottom: "2px solid var(--brand-experiment)"
+            }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <Text 
+                        variant="heading-lg/semibold" 
+                        style={{ 
+                            color: "white",
+                            fontSize: "24px",
+                            fontWeight: "700"
+                        }}
+                    >
+                        {title}
+                    </Text>
+                    <div style={{
+                        backgroundColor: "var(--brand-experiment)",
+                        color: "white",
+                        padding: "6px 12px",
+                        borderRadius: "20px",
+                        fontSize: "14px",
+                        fontWeight: "600"
+                    }}>
+                        {users.length} users
+                    </div>
+                </div>
+                
+                {/* Action buttons */}
                 <div style={{ display: "flex", gap: "8px" }}>
-                    <Button size="small" color="green" onClick={() => syncFromGist(pluginName, usersKey, triggerUpdate)}>
-                        Sync Down
+                    <Button
+                        size="small"
+                        color="green"
+                        onClick={() => exportBanList(pluginName, usersKey, reasonsKey)}
+                        style={{
+                            backgroundColor: "#43b581",
+                            color: "white",
+                            fontWeight: "600",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "6px"
+                        }}
+                    >
+                        <DownloadIcon />
+                        Export
                     </Button>
-                    <Button size="small" color="blurple" onClick={() => syncToGist(pluginName, usersKey)}>
-                        Sync Up
+                    
+                    <Button
+                        size="small"
+                        color="blurple"
+                        onClick={() => importBanList(pluginName, usersKey, reasonsKey, triggerUpdate)}
+                        style={{
+                            backgroundColor: "var(--brand-experiment)",
+                            color: "white",
+                            fontWeight: "600",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "6px"
+                        }}
+                    >
+                        <UploadIcon />
+                        Import
+                    </Button>
+                    
+                    <Button
+                        size="small"
+                        color="red"
+                        onClick={() => clearBanList(pluginName, usersKey, reasonsKey, triggerUpdate)}
+                        style={{
+                            backgroundColor: "#f04747",
+                            color: "white",
+                            fontWeight: "600",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "6px"
+                        }}
+                        disabled={users.length === 0}
+                    >
+                        <TrashIcon />
+                        Clear All
                     </Button>
                 </div>
             </div>
 
-            <TextInput
-                value={searchTerm}
-                onChange={setSearchTerm}
-                placeholder="Search users..."
-                style={{ width: "100%", marginBottom: "16px" }}
-            />
+            {/* Search */}
+            <div style={{ marginBottom: "24px", position: "relative" }}>
+                <TextInput
+                    value={searchTerm}
+                    onChange={setSearchTerm}
+                    placeholder="🔍 Search by username, display name, or reason..."
+                    style={{ 
+                        width: "100%", 
+                        paddingRight: "40px",
+                        backgroundColor: "var(--input-background)",
+                        border: "2px solid var(--background-modifier-accent)",
+                        borderRadius: "8px",
+                        fontSize: "16px",
+                        color: "white"
+                    }}
+                />
+                <div style={{ 
+                    position: "absolute", 
+                    right: "12px", 
+                    top: "50%", 
+                    transform: "translateY(-50%)",
+                    color: "var(--text-muted)"
+                }}>
+                    <SearchIcon />
+                </div>
+            </div>
 
-            <div style={{ maxHeight: "400px", overflowY: "auto" }}>
+            {/* User list container */}
+            <div style={{
+                maxHeight: "500px",
+                overflowY: "auto",
+                backgroundColor: "var(--background-secondary)",
+                borderRadius: "8px",
+                padding: "12px"
+            }}>
                 {filteredUsers.length === 0 ? (
-                    <div style={{ textAlign: "center", padding: "40px", color: "var(--text-muted)" }}>
-                        {users.length === 0 ? "No users in ban list" : `No users matching "${searchTerm}"`}
+                    <div style={{ 
+                        textAlign: "center", 
+                        padding: "40px 20px",
+                        color: "var(--text-muted)",
+                        fontSize: "16px",
+                        fontStyle: "italic"
+                    }}>
+                        {users.length === 0 ? 
+                            "No users in the ban list yet" : 
+                            `No users matching "${searchTerm}"`
+                        }
                     </div>
                 ) : (
                     filteredUsers.map((id, index) => {
                         const user = userMap[id];
+                        const isEditing = editingReasons[id];
+                        const reason = reasons[id] || "";
+                        
                         return (
-                            <div key={id} style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "12px",
-                                padding: "12px",
+                            <div key={id} style={{ 
+                                display: "flex", 
+                                alignItems: "center", 
+                                gap: "12px", 
+                                padding: "12px 16px",
                                 marginBottom: "8px",
                                 backgroundColor: "var(--background-primary)",
-                                borderRadius: "8px"
+                                borderRadius: "8px",
+                                border: "1px solid var(--background-modifier-accent)",
+                                transition: "all 0.2s ease",
+                                boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
                             }}>
+                                {/* Index number */}
                                 <div style={{
-                                    minWidth: "30px",
-                                    height: "30px",
+                                    minWidth: "40px",
+                                    height: "40px",
                                     display: "flex",
                                     alignItems: "center",
                                     justifyContent: "center",
                                     backgroundColor: "var(--brand-experiment)",
                                     color: "white",
                                     borderRadius: "50%",
-                                    fontSize: "12px",
-                                    fontWeight: "bold"
+                                    fontSize: "14px",
+                                    fontWeight: "700"
                                 }}>
                                     {index + 1}
                                 </div>
-
+                                
+                                {/* Avatar */}
                                 <img
                                     onClick={() => Util.openUserProfile(id)}
                                     src={user?.getAvatarURL?.() ?? "https://cdn.discordapp.com/embed/avatars/0.png"}
-                                    style={{ width: "40px", height: "40px", borderRadius: "50%", cursor: "pointer" }}
+                                    style={{ 
+                                        width: "48px", 
+                                        height: "48px", 
+                                        borderRadius: "50%",
+                                        cursor: "pointer",
+                                        border: "3px solid var(--brand-experiment)",
+                                        transition: "transform 0.2s ease"
+                                    }}
+                                    onMouseEnter={(e) => e.target.style.transform = "scale(1.1)"}
+                                    onMouseLeave={(e) => e.target.style.transform = "scale(1)"}
                                 />
-
-                                <div style={{ flex: 1 }}>
-                                    <div style={{ color: "white", fontWeight: "600" }}>
+                                
+                                {/* User info */}
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ 
+                                        color: "white", 
+                                        fontSize: "16px", 
+                                        fontWeight: "600",
+                                        marginBottom: "2px"
+                                    }}>
                                         {user?.username || "Unknown User"}
                                     </div>
                                     {user?.globalName && user.globalName !== user.username && (
-                                        <div style={{ fontSize: "14px", color: "var(--text-muted)" }}>
+                                        <div style={{ 
+                                            fontSize: "14px", 
+                                            color: "var(--text-muted)",
+                                            fontStyle: "italic"
+                                        }}>
                                             {user.globalName}
                                         </div>
                                     )}
-                                    <div style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "monospace" }}>
-                                        {id}
+                                    <div style={{ 
+                                        fontSize: "12px", 
+                                        color: "var(--text-muted)",
+                                        fontFamily: "monospace"
+                                    }}>
+                                        ID: {id}
                                     </div>
                                 </div>
 
-                                <Button onClick={() => removeUser(id)} size="small" color="red">
-                                    Remove
+                                {/* Reason input section */}
+                                {reasonsKey && (
+                                    <div style={{ 
+                                        display: "flex", 
+                                        alignItems: "center", 
+                                        gap: "8px", 
+                                        minWidth: "250px"
+                                    }}>
+                                        <TextInput
+                                            value={isEditing ? reasons[id] || "" : reason}
+                                            placeholder="Enter ban reason..."
+                                            disabled={!isEditing}
+                                            onChange={(value) => setReasons(prev => ({ ...prev, [id]: value }))}
+                                            style={{ 
+                                                flex: 1,
+                                                backgroundColor: isEditing ? "var(--input-background)" : "var(--background-secondary)",
+                                                border: `2px solid ${isEditing ? "var(--brand-experiment)" : "var(--background-modifier-accent)"}`,
+                                                borderRadius: "6px",
+                                                color: "white",
+                                                fontSize: "14px"
+                                            }}
+                                        />
+                                        
+                                        {isEditing ? (
+                                            <Button 
+                                                size="small"
+                                                color="green"
+                                                onClick={() => saveReason(id, reasons[id] || "")}
+                                                style={{
+                                                    backgroundColor: "#43b581",
+                                                    color: "white",
+                                                    fontWeight: "600"
+                                                }}
+                                            >
+                                                ✓ Save
+                                            </Button>
+                                        ) : (
+                                            <div 
+                                                onClick={() => setEditingReasons(prev => ({ ...prev, [id]: true }))}
+                                                style={{ 
+                                                    cursor: "pointer", 
+                                                    padding: "8px",
+                                                    borderRadius: "6px",
+                                                    backgroundColor: "var(--background-secondary)",
+                                                    color: "var(--text-normal)",
+                                                    transition: "all 0.2s ease"
+                                                }}
+                                                onMouseEnter={(e) => {
+                                                    e.target.style.backgroundColor = "var(--brand-experiment)";
+                                                    e.target.style.color = "white";
+                                                }}
+                                                onMouseLeave={(e) => {
+                                                    e.target.style.backgroundColor = "var(--background-secondary)";
+                                                    e.target.style.color = "var(--text-normal)";
+                                                }}
+                                            >
+                                                <EditIcon />
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* Remove button */}
+                                <Button 
+                                    onClick={() => removeUser(id)} 
+                                    size="small" 
+                                    color="red"
+                                    style={{
+                                        backgroundColor: "#f04747",
+                                        color: "white",
+                                        fontWeight: "600",
+                                        minWidth: "80px"
+                                    }}
+                                >
+                                    🗑️ Remove
                                 </Button>
                             </div>
                         );
@@ -308,81 +624,205 @@ function BanList({ pluginName, usersKey, title }: { pluginName: string; usersKey
     );
 }
 
-// Main modal
-function BanListManager({ modalProps }: { modalProps: ModalProps }) {
+// Main modal component
+function UserList({ modalProps }: { modalProps: ModalProps }) {
     const [activeTab, setActiveTab] = useState<'single' | 'multi'>('single');
+
+    const tabStyle = (isActive: boolean) => ({
+        padding: "12px 24px",
+        backgroundColor: isActive ? "var(--brand-experiment)" : "var(--background-secondary)",
+        color: "white",
+        border: "none",
+        borderRadius: isActive ? "12px 12px 0 0" : "12px",
+        cursor: "pointer",
+        marginRight: "4px",
+        fontSize: "16px",
+        fontWeight: isActive ? "700" : "500",
+        transition: "all 0.3s ease",
+        boxShadow: isActive ? "0 -2px 8px rgba(0,0,0,0.2)" : "none",
+        transform: isActive ? "translateY(-2px)" : "none"
+    });
+
+    const getTabCounts = () => {
+        const singleCount = Vencord.Plugins.plugins.autoBan?.settings?.store?.users?.split('/')?.filter(Boolean).length || 0;
+        const multiCount = Vencord.Plugins.plugins.MultiServerAutoban?.settings?.store?.users?.split('/')?.filter(Boolean).length || 0;
+        return { singleCount, multiCount };
+    };
+
+    const { singleCount, multiCount } = getTabCounts();
 
     return (
         <ModalRoot {...modalProps} size={ModalSize.LARGE}>
-            <ModalHeader>
-                <Text variant="heading-lg/semibold" style={{ color: "white" }}>
-                    Auto-Ban List Management
+            <ModalHeader style={{ 
+                backgroundColor: "var(--background-primary)",
+                borderBottom: "3px solid var(--brand-experiment)",
+                padding: "20px"
+            }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <div style={{
+                        fontSize: "32px"
+                    }}>
+                        🔨
+                    </div>
+                    <Text 
+                        variant="heading-lg/semibold" 
+                        style={{ 
+                            color: "white",
+                            fontSize: "28px",
+                            fontWeight: "700"
+                        }}
+                    >
+                        Auto-Ban List Management
+                    </Text>
+                </div>
+                <Text style={{ 
+                    color: "var(--text-muted)", 
+                    fontSize: "14px",
+                    marginTop: "4px"
+                }}>
+                    Export, import, and manage your ban lists
                 </Text>
             </ModalHeader>
-
-            <ModalContent style={{ padding: "0" }}>
-                <div style={{ display: "flex", borderBottom: "1px solid var(--background-modifier-accent)" }}>
-                    <button
-                        style={{
-                            padding: "12px 24px",
-                            backgroundColor: activeTab === 'single' ? "var(--brand-experiment)" : "var(--background-secondary)",
-                            color: "white",
-                            border: "none",
-                            cursor: "pointer"
-                        }}
-                        onClick={() => setActiveTab('single')}
-                    >
-                        Dadscord
-                    </button>
-                    <button
-                        style={{
-                            padding: "12px 24px",
-                            backgroundColor: activeTab === 'multi' ? "var(--brand-experiment)" : "var(--background-secondary)",
-                            color: "white",
-                            border: "none",
-                            cursor: "pointer"
-                        }}
-                        onClick={() => setActiveTab('multi')}
-                    >
-                        Multi Server
-                    </button>
+            
+            <ModalContent style={{ 
+                backgroundColor: "var(--background-secondary)",
+                padding: "0"
+            }}>
+                {/* Tab navigation */}
+                <div style={{ 
+                    padding: "20px 20px 0 20px",
+                    backgroundColor: "var(--background-secondary)"
+                }}>
+                    <div style={{ display: "flex", borderBottom: "2px solid var(--background-modifier-accent)" }}>
+                        <button
+                            style={tabStyle(activeTab === 'single')}
+                            onClick={() => setActiveTab('single')}
+                            onMouseEnter={(e) => {
+                                if (activeTab !== 'single') {
+                                    e.target.style.backgroundColor = "var(--background-modifier-hover)";
+                                    e.target.style.transform = "translateY(-1px)";
+                                }
+                            }}
+                            onMouseLeave={(e) => {
+                                if (activeTab !== 'single') {
+                                    e.target.style.backgroundColor = "var(--background-secondary)";
+                                    e.target.style.transform = "none";
+                                }
+                            }}
+                        >
+                            🏠 Dadscord
+                            <div style={{
+                                display: "inline-block",
+                                marginLeft: "8px",
+                                backgroundColor: activeTab === 'single' ? "rgba(255,255,255,0.2)" : "var(--brand-experiment)",
+                                color: "white",
+                                padding: "2px 8px",
+                                borderRadius: "12px",
+                                fontSize: "12px",
+                                fontWeight: "600"
+                            }}>
+                                {singleCount}
+                            </div>
+                        </button>
+                        <button
+                            style={tabStyle(activeTab === 'multi')}
+                            onClick={() => setActiveTab('multi')}
+                            onMouseEnter={(e) => {
+                                if (activeTab !== 'multi') {
+                                    e.target.style.backgroundColor = "var(--background-modifier-hover)";
+                                    e.target.style.transform = "translateY(-1px)";
+                                }
+                            }}
+                            onMouseLeave={(e) => {
+                                if (activeTab !== 'multi') {
+                                    e.target.style.backgroundColor = "var(--background-secondary)";
+                                    e.target.style.transform = "none";
+                                }
+                            }}
+                        >
+                            🌐 Multi Server
+                            <div style={{
+                                display: "inline-block",
+                                marginLeft: "8px",
+                                backgroundColor: activeTab === 'multi' ? "rgba(255,255,255,0.2)" : "var(--brand-experiment)",
+                                color: "white",
+                                padding: "2px 8px",
+                                borderRadius: "12px",
+                                fontSize: "12px",
+                                fontWeight: "600"
+                            }}>
+                                {multiCount}
+                            </div>
+                        </button>
+                    </div>
                 </div>
 
-                {activeTab === 'single' ? (
-                    <BanList pluginName="autoBan" usersKey="users" title="Dadscord Bans" />
-                ) : (
-                    <BanList pluginName="MultiServerAutoban" usersKey="users" title="Multi Server Bans" />
-                )}
+                {/* Tab content */}
+                <div style={{ padding: "0 20px 20px 20px" }}>
+                    {activeTab === 'single' ? (
+                        <BanList
+                            pluginName="autoBan"
+                            usersKey="users"
+                            reasonsKey="store"
+                            title="Dadscord Bans"
+                        />
+                    ) : (
+                        <BanList
+                            pluginName="MultiServerAutoban"
+                            usersKey="users"
+                            reasonsKey="reasons"
+                            title="Multi Server Bans"
+                        />
+                    )}
+                </div>
             </ModalContent>
-
-            <ModalFooter>
-                <Button color="red" onClick={modalProps.onClose}>
-                    Close
-                </Button>
+            
+            <ModalFooter style={{ 
+                backgroundColor: "var(--background-primary)",
+                borderTop: "2px solid var(--background-modifier-accent)",
+                padding: "16px 20px"
+            }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
+                    <Text style={{ 
+                        color: "var(--text-muted)", 
+                        fontSize: "13px",
+                        fontStyle: "italic"
+                    }}>
+                        💡 Tip: Use Alt+J to quickly open this menu | Export/Import to share ban lists
+                    </Text>
+                    <Button 
+                        color="red" 
+                        onClick={modalProps.onClose}
+                        style={{
+                            backgroundColor: "#f04747",
+                            color: "white",
+                            fontWeight: "600",
+                            padding: "10px 20px",
+                            fontSize: "14px"
+                        }}
+                    >
+                        Close
+                    </Button>
+                </div>
             </ModalFooter>
         </ModalRoot>
     );
 }
+
+export default definePlugin({
+    name: "autoBanMenu",
+    description: "Enhanced ban list with import/export functionality.",
+    authors: [{ name: "curve", id: 818846027511103508n }, { name: "dot", id: 1400606596521791773n }],
+    start() { 
+        document.addEventListener("keydown", handleKeydown); 
+    },
+    stop() { 
+        document.removeEventListener("keydown", handleKeydown); 
+    },
+});
 
 function handleKeydown(e: KeyboardEvent) {
     if (e.altKey && e.key.toLowerCase() === "j") {
         openGuildInfoModal();
     }
 }
-
-export default definePlugin({
-    name: "autoBanMenu",
-    description: "Auto-ban menu with gitHub sync for sharing between users.",
-    authors: [{ name: "curve", id: 818846027511103508n }, { name: "dot", id: 1400606596521791773n }],
-
-    settings,
-
-    start() {
-        document.addEventListener("keydown", handleKeydown);
-    },
-
-    stop() {
-        document.removeEventListener("keydown", handleKeydown);
-        stopAutoSync();
-    },
-});
