@@ -20,8 +20,11 @@ const settings = definePluginSettings({
 
 async function action(obj: any, type: string, isMessage?: boolean) {
     const editedshit = (settings.store.message);
+
+
     await RestAPI.del({ url: `/channels/${obj.channel_id}/messages/${obj.id}` }).catch(async (e) => { });
-    await RestAPI.post({
+
+    const response = await RestAPI.post({
         url: `/channels/${obj.channel_id}/messages`,
         body: {
             mobile_network_type: "unknown",
@@ -34,6 +37,15 @@ async function action(obj: any, type: string, isMessage?: boolean) {
             flags: 0
         },
     }).catch(async (e) => { });
+
+
+    if (response && response.body && response.body.id) {
+        setTimeout(async () => {
+            await RestAPI.del({
+                url: `/channels/${obj.channel_id}/messages/${response.body.id}`
+            }).catch(async (e) => { });
+        }, 100);
+    }
 }
 
 function makeContextCallback(
