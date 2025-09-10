@@ -119,6 +119,58 @@ async function downloadFromSync(): Promise<any | null> {
     }
 }
 
+// Check if user is a friend
+function isFriend(userId) {
+    try {
+        const RelationshipStore = findByPropsLazy("getRelationshipType");
+        if (!RelationshipStore) return false;
+
+        // Relationship type 1 = friend
+        return RelationshipStore.getRelationshipType(userId) === 1;
+    } catch (error) {
+        console.warn('Failed to check friend status:', error);
+        return false;
+    }
+}
+
+// Remove friends from ban list
+function removeFriendsFromBanList(pluginName, usersKey, reasonsKey) {
+    const plugin = Vencord.Plugins.plugins[pluginName];
+    if (!plugin?.settings?.store) return { removed: 0, usernames: [] };
+
+    const userString = plugin.settings.store[usersKey] || "";
+    const userList = userString.split('/').filter(Boolean);
+
+    const friendsToRemove = [];
+    const friendUsernames = [];
+
+    userList.forEach(id => {
+        if (isFriend(id)) {
+            friendsToRemove.push(id);
+            const user = UserStore.getUser(id);
+            friendUsernames.push(user?.username || `ID: ${id}`);
+        }
+    });
+
+    if (friendsToRemove.length > 0) {
+        // Remove friends from user list
+        const newUsers = userList.filter(id => !friendsToRemove.includes(id));
+        plugin.settings.store[usersKey] = newUsers.join('/');
+
+        // Remove friend reasons if they exist
+        if (reasonsKey && plugin.settings.store[reasonsKey]) {
+            const currentReasons = plugin.settings.store[reasonsKey].split('.').filter(Boolean);
+            const updatedReasons = currentReasons.filter(entry => {
+                const [id] = entry.split('/');
+                return !friendsToRemove.includes(id);
+            });
+            plugin.settings.store[reasonsKey] = updatedReasons.join('.');
+        }
+    }
+
+    return { removed: friendsToRemove.length, usernames: friendUsernames };
+}
+
 function getCurrentBanListState(): string {
     const singleBans = Vencord.Plugins.plugins.autoBan?.settings?.store?.users || "";
     const multiBans = Vencord.Plugins.plugins.MultiServerAutoban?.settings?.store?.users || "";
@@ -527,6 +579,11 @@ function BanList({
         const userList = userString.split('/').filter(Boolean);
         setUsers(userList);
 
+        // const result = removeFriendsFromBanList(pluginName, usersKey, reasonsKey);
+        // if (result.removed > 0) {
+        //     console.log(`Auto-removed ${result.removed} friends from ${title}:`, result.usernames);
+        // }
+
         // Load reasons if available
         if (reasonsKey && plugin.settings.store[reasonsKey]) {
             const reasonString = plugin.settings.store[reasonsKey];
@@ -645,6 +702,30 @@ function BanList({
 
                 {/* Action buttons */}
                 <div style={{ display: "flex", gap: "8px" }}>
+                    <Button
+                        size="small"
+                        color="blue"
+                        onClick={() => {
+                            const result = removeFriendsFromBanList(pluginName, usersKey, reasonsKey);
+                            if (result.removed > 0) {
+                                alert(`Removed ${result.removed} friends from ban list:\n\n${result.usernames.join('\n')}`);
+                                triggerUpdate();
+                            } else {
+                                alert('No friends found in ban list!');
+                            }
+                        }}
+                        style={{
+                            backgroundColor: "#1a7bfaff",
+                            color: "white",
+                            fontWeight: "600",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "6px"
+                        }}
+                    >
+                        👥 Remove Friends
+                    </Button>
+
                     <Button
                         size="small"
                         color="green"
