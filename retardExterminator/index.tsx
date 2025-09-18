@@ -63,7 +63,7 @@ async function executeBan(channelId: string, userId: string): Promise<void> {
         if (bannedUsers.has(userId)) return;
 
 
-        if (!Vencord.Plugins.plugins.atticusVCownerdetector?.settings?.store?.amivcowner) {
+        if (!Vencord.Plugins.plugins.vcOwnerDetector?.settings?.store?.amivcowner) {
             console.warn("Cannot ban user: VC owner permissions not detected");
             return;
         }
